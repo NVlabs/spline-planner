@@ -20,6 +20,7 @@ setup(
         "pytorch-lightning",
         "wandb",
         "torch==1.10.2",
+        "torchaudio==0.10.2",
         "torchvision==0.11.3",
         "torchtext",  # weird pytorch-lightning dependency bug
     ],
