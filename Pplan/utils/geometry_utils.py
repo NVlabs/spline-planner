@@ -1,8 +1,8 @@
 import collections
 import numpy as np
 import torch
-import jax
-import jax.numpy as jnp
+# import jax
+# import jax.numpy as jnp
 from enum import IntEnum
 from scipy.interpolate import interp1d
 import pdb
@@ -17,7 +17,6 @@ def interp_lanes(lane):
     Returns:
 
     """
-
     ds = np.cumsum(
         np.hstack([0., np.linalg.norm(lane[1:, :2]-lane[:-1, :2], axis=-1)]))
     return interp1d(ds, lane, fill_value="extrapolate", assume_sorted=True, axis=0), lane[0]

@@ -75,7 +75,7 @@ def mean_control_effort_coefficients(x0, dx0, xf, dxf):
 
 class SplinePlanner(object):
     def __init__(self, device, dx_grid=None, dy_grid=None, acce_grid=None, dyaw_grid=None, max_steer=0.5, max_rvel=8,
-                 acce_bound=[-6, 4], vbound=[-10, 30], spline_order=3):
+                 acce_bound=[-6, 4], vbound=[-10, 30], spline_order=3,N_seg = 10):
         self.spline_order = spline_order
         self.device = device
         assert spline_order == 3
@@ -102,6 +102,7 @@ class SplinePlanner(object):
         self.max_rvel = max_rvel
         self.acce_bound = acce_bound
         self.vbound = vbound
+        self.N_seg = N_seg
 
     def calc_trajectories(self, x0, tf, xf):
         if x0.ndim == 1:
@@ -111,18 +112,17 @@ class SplinePlanner(object):
             xc, yc, tf = compute_interpolating_spline(x0, xf, tf)
         else:
             raise ValueError("wrong dimension for x0")
-        traj = compute_spline_xyvaqrt(xc, yc, tf)
+        traj = compute_spline_xyvaqrt(xc, yc, tf, self.N_seg)
         return traj
 
     def gen_terminals_lane(self, x0, tf, lanes):
-        if lanes is None:
+        if lanes is None or len(lanes)==0:
             return self.gen_terminals(x0, tf)
 
         gs = [self.dx_grid.shape[0], self.acce_grid.shape[0]]
         dx = self.dx_grid[:, None, None, None].repeat(1, 1, gs[1], 1).flatten()
         dv = self.acce_grid[None, None, :, None].repeat(
             gs[0], 1, 1, 1).flatten()*tf
-
         delta_x = list()
         if x0.ndim == 1:
             for lane in lanes:
@@ -200,23 +200,22 @@ class SplinePlanner(object):
 
             xf = self.gen_terminals_lane(
                 x0, tf, lane_interp)
-
+        
         # x, y, v, a, yaw,r, t
         traj = self.calc_trajectories(x0, tf, xf)
         if dyn_filter:
             feas_flag = self.feasible_flag(traj)
-            return traj[feas_flag, :], xf[feas_flag, :]
+            return traj[feas_flag, 1:,:], xf[feas_flag]
         else:
-            return traj, xf
+            return traj[...,1:,:], xf
 
     def gen_trajectory_batch(self, x0_set, tf, lanes=None, dyn_filter=True):
         if lanes is None:
             xf_set = self.gen_terminals(x0_set, tf)
         else:
             lane_interp = [GeoUtils.interp_lanes(lane) for lane in lanes]
-
-            xf_set = self.gen_terminals_lane(
-                x0_set, tf, lane_interp)
+            xf_set = self.gen_terminals_lane(x0_set, tf, lane_interp)
+                
         num_node = x0_set.shape[0]
         num = xf_set.shape[1]
         x0_tiled = torch.tile(x0_set, [num, 1])
@@ -229,7 +228,7 @@ class SplinePlanner(object):
                 num * num_node, dtype=torch.bool).to(x0_set.device)
         feas_flag = feas_flag.reshape(num_node, num)
         traj = traj.reshape(num_node, num, *traj.shape[1:])
-        return [traj[i, feas_flag[i]] for i in range(num_node)]
+        return [traj[i, feas_flag[i],1:] for i in range(num_node)]
 
     def gen_trajectory_tree(self, x0, tf, n_layers, dyn_filter=True):
         trajs = list()
@@ -257,6 +256,7 @@ if __name__ == "__main__":
     tf = 5
     traj, xf = planner.gen_trajectories(x0, tf)
     trajs = planner.gen_trajectory_batch(xf, tf)
+    pdb.set_trace()
     # # x, y, v, a, yaw,r, t = traj
     # msize = 12
     # trajs, nodes = planner.gen_trajectory_tree(x0, tf, 2)

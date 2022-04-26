@@ -66,16 +66,20 @@ class TrajTree(object):
         assert len(self.children) == 0
         nodes = [self]
         device = self.traj.device
-        for i in range(n_steps):
-            nodes_state = torch.stack(
-                [node.state for node in nodes], 0).to(device)
-            trajs = expand_func(nodes_state)
-            new_nodes = list()
-            for node, traj in zip(nodes, trajs):
-                node.children = [TrajTree(traj[i], node, node.time + 1)
-                                 for i in range(traj.shape[0])]
-                new_nodes += node.children
-            nodes = new_nodes
+        with torch.no_grad():
+            for i in range(n_steps):
+                nodes_state = torch.stack(
+                    [node.state for node in nodes], 0).to(device)
+                trajs = expand_func(nodes_state)
+                new_nodes = list()
+                for node, traj in zip(nodes, trajs):
+                    traj[..., -1] += node.traj[-1, -1]
+                    node.children = [TrajTree(traj[i], node, node.time + 1)
+                                     for i in range(traj.shape[0])]
+                    new_nodes += node.children
+                nodes = new_nodes
+                if len(new_nodes) == 0:
+                    return
 
     def plot_tree(self, ax=None, msize=12):
         if ax is None:
@@ -112,8 +116,10 @@ if __name__ == "__main__":
 
         def expand_func(x): return planner.gen_trajectory_batch(
             x, tf, (lane0, lane1, lane2))
-        t = timer.toc()
+        # def expand_func(x): return planner.gen_trajectory_batch(
+        #     x, tf)
         x0.grow_tree(expand_func, 2)
+        t = timer.toc()
         ax = x0.plot_tree()
         ax.plot(lane0[:, 0], lane0[:, 1],
                 linestyle='dashed', linewidth=3, color="r")
