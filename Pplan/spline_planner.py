@@ -5,7 +5,7 @@ import pdb
 import Pplan.utils.geometry_utils as GeoUtils
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
-from Pplan.utils.interp1d import Interp1d
+# from Pplan.utils.interp1d import Interp1d
 
 STATE_INDEX = [0, 1, 2, 4]
 
@@ -252,8 +252,8 @@ class SplinePlanner(object):
 
 
 if __name__ == "__main__":
-    planner = SplinePlanner("cuda")
-    x0 = torch.tensor([1., 2., 10., 0.]).cuda()
+    planner = SplinePlanner(device)
+    x0 = torch.tensor([1., 2., 10., 0.]).to(device)
     tf = 5
     traj, xf = planner.gen_trajectories(x0, tf)
     trajs = planner.gen_trajectory_batch(xf, tf)

@@ -1,8 +1,8 @@
 import collections
 import numpy as np
 import torch
-import jax
-import jax.numpy as jnp
+# import jax
+# import jax.numpy as jnp
 from enum import IntEnum
 from scipy.interpolate import interp1d
 import pdb
