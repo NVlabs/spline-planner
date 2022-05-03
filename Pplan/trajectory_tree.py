@@ -94,11 +94,12 @@ if __name__ == "__main__":
     from Pplan.spline_planner import SplinePlanner
     from Pplan.utils.timer import Timer
 
-    planner = SplinePlanner("cuda")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    planner = SplinePlanner(device)
     timer = Timer()
     timer.tic()
     with torch.no_grad():
-        traj = torch.tensor([[4., 1., 5., 0., 0., 0., 0.]]).cuda()
+        traj = torch.tensor([[4., 1., 5., 0., 0., 0., 0.]]).to(device)
         lane0 = np.stack(
             [np.linspace(0, 100, 20), np.ones(20) * -3.6, np.zeros(20)]).T
         lane1 = np.stack(
@@ -112,8 +113,9 @@ if __name__ == "__main__":
 
         def expand_func(x): return planner.gen_trajectory_batch(
             x, tf, (lane0, lane1, lane2))
+        x0.grow_tree(expand_func, 1)
         t = timer.toc()
-        x0.grow_tree(expand_func, 2)
+
         ax = x0.plot_tree()
         ax.plot(lane0[:, 0], lane0[:, 1],
                 linestyle='dashed', linewidth=3, color="r")
