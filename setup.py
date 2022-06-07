@@ -16,10 +16,10 @@ setup(
     packages=[package for package in find_packages()
               if package.startswith("Pplan")],
     install_requires=[
-        "numpy>=1.21.0",
-        "torch==1.10.2",
-        "torchaudio==0.10.2",
-        "torchvision==0.11.3",
+        # "numpy>=1.21.0",
+        # "torch==1.10.2",
+        # "torchaudio==0.10.2",
+        # "torchvision==0.11.3",
     ],
     eager_resources=["*"],
     include_package_data=True,

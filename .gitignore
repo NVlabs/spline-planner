@@ -2,10 +2,8 @@
 *.yaml
 
 ## local test files
-XYQV Splines.ipynb
-trajectory_tree_np.py
-spline_test.ipyng
-spline_planner_jax.py
+Pplan/archived
+
 
 
 # Byte-compiled / optimized / DLL files
