@@ -102,11 +102,14 @@ if __name__ == "__main__":
     from Pplan.Sampling.spline_planner import SplinePlanner
     from Pplan.utils.timer import Timer
 
+    
+
     planner = SplinePlanner("cuda")
     timer = Timer()
     timer.tic()
     with torch.no_grad():
-        traj = torch.tensor([[4., 1., 5., 0., 0., 0., 0.]]).cuda()
+        traj = torch.tensor([[4., 1., 5., 0., 0.1, 0., 0.]]).cuda()
+        
         lane0 = np.stack(
             [np.linspace(0, 100, 20), np.ones(20) * -3.6, np.zeros(20)]).T
         lane1 = np.stack(

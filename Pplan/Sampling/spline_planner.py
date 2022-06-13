@@ -68,6 +68,8 @@ def compute_spline_xyvaqrt(x_coefficients, y_coefficients, tf, N=10):
         t.unsqueeze(-1),
     ), -1)
 
+def patch_yaw_low_speed(traj):
+    idx = traj[...,]
 
 def mean_control_effort_coefficients(x0, dx0, xf, dxf):
     """Returns `(c4, c3, c2)` corresponding to `c4 * tf**-4 + c3 * tf**-3 + c2 * tf**-2`."""
@@ -128,11 +130,14 @@ class SplinePlanner(object):
         dy = self.dy_grid_lane[None,:,None,None].repeat(gs[0], 1, gs[2], 1).flatten()
         dv = self.acce_grid[None, None, :, None].repeat(
             gs[0], gs[1], 1, 1).flatten()*tf
-        delta_x = list()
+        xf = list()
         if x0.ndim == 1:
             for lane in lanes:
                 f, p_start = lane
-                p_start = torch.from_numpy(p_start).to(x0.device)
+                if isinstance(p_start,np.ndarray):
+                    p_start = torch.from_numpy(p_start).to(x0.device)
+                elif isinstance(p_start,torch.Tensor):
+                    p_start = p_start.to(x0.device)
                 offset = x0[:2]-p_start[:2]
                 s_offset = offset[0] * \
                     torch.cos(p_start[2])+offset[1]*torch.sin(p_start[2])
@@ -141,32 +146,32 @@ class SplinePlanner(object):
                 xyyaw = torch.from_numpy(f(ss.cpu().numpy())).type(
                     torch.float).to(x0.device)
                 xyyaw[...,1]+=dy
-                delta_x.append(
+                xf.append(
                     torch.cat((xyyaw[:, :2], dv.reshape(-1, 1)+x0[2:3], xyyaw[:, 2:]), -1))
             # adding the end points not fixated on lane
-            xyyaw = torch.stack([ds,dy,dv,torch.zeros_like(ds)],-1)
-            delta_x.append(xyyaw)
+            xf_straight = torch.stack([ds,dy,dv+x0[2],x0[3].tile(ds.shape[0])],-1)
+            xf.append(xf_straight)
         elif x0.ndim == 2:
             for lane in lanes:
                 f, p_start = lane
                 p_start = torch.from_numpy(p_start).to(x0.device)
                 offset = x0[:, :2]-p_start[None, :2]
-                s_offset = offset[:, 0] * \
-                    torch.cos(p_start[2])+offset[:, 1]*torch.sin(p_start[2])
+                s_offset = offset[:, 0]*torch.cos(p_start[2])+offset[:, 1]*torch.sin(p_start[2])
+                    
                 ds = (dx+dv/2*tf).unsqueeze(0)+x0[:, 2:3]*tf
                 ss = ds + s_offset.unsqueeze(-1)
                 xyyaw = torch.from_numpy(f(ss.cpu().numpy())).type(
                     torch.float).to(x0.device)
                 xyyaw[...,1]+=dy
-                delta_x.append(torch.cat((xyyaw[..., :2], dv.tile(
+                xf.append(torch.cat((xyyaw[..., :2], dv.tile(
                     x0.shape[0], 1).unsqueeze(-1)+x0[:, None, 2:3], xyyaw[..., 2:]), -1))
             # adding the end points not fixated on lane
-            xyyaw = torch.stack([ds,dy.tile(x0.shape[0],1),dv.tile(x0.shape[0],1),torch.zeros_like(ds)],-1)
-            delta_x.append(xyyaw)
+            xf_straight = torch.stack([ds,dy.tile(x0.shape[0],1),dv.tile(x0.shape[0],1)+x0[:, None, 2],x0[:, None, 3].tile(1,ds.shape[1])],-1)
+            xf.append(xf_straight)
         else:
             raise ValueError("x0 must have dimension 1 or 2")
-        delta_x = torch.cat(delta_x, -2)
-        return delta_x
+        xf = torch.cat(xf, -2)
+        return xf
 
     def gen_terminals(self, x0, tf):
         gs = [self.dx_grid.shape[0], self.dy_grid.shape[0],
@@ -185,44 +190,46 @@ class SplinePlanner(object):
             xy = torch.cat(
                 (delta_x[:, 0:1] + delta_x[:, 2:3] / 2 * tf + x0[2:3] * tf, delta_x[:, 1:2]), -1)
             rotated_xy = GeoUtils.batch_rotate_2D(xy, x0[3]) + x0[:2]
-            return torch.cat((rotated_xy+x0[None,:2], delta_x[:, 2:] + x0[2:]), -1) + x0[None, :]
+            return torch.cat((rotated_xy, delta_x[:, 2:] + x0[2:]), -1)
         elif x0.ndim == 2:
-
             delta_x = torch.tile(delta_x, [x0.shape[0], 1, 1])
             xy = torch.cat(
                 (delta_x[:, :, 0:1] + delta_x[:, :, 2:3] / 2 * tf + x0[:, None, 2:3] * tf, delta_x[:, :, 1:2]), -1)
             rotated_xy = GeoUtils.batch_rotate_2D(
                 xy, x0[:, 3:4]) + x0[:, None, :2]
-            return torch.cat((rotated_xy+x0[:,None,:2], delta_x[:, :, 2:] + x0[:, None, 2:]), -1) + x0[:, None, :]
+            return torch.cat((rotated_xy, delta_x[:, :, 2:] + x0[:, None, 2:]), -1)
         else:
             raise ValueError("x0 must have dimension 1 or 2")
 
-    def feasible_flag(self, traj):
+    def feasible_flag(self, traj,xf):
+        diff = traj[...,-1,[0,1,2,4]]-xf
+
         feas_flag = ((traj[..., 2] >= self.vbound[0]) & (traj[..., 2] < self.vbound[1]) &
                      (traj[..., 3] >= self.acce_bound[0]) & (traj[..., 3] <= self.acce_bound[1]) &
                      (torch.abs(traj[..., 5] * traj[..., 2]) <= self.max_rvel) & (
-            torch.abs(traj[..., 2]) * self.max_steer >= torch.abs(traj[..., 5]))).all(1)
+            torch.abs(traj[..., 2]) * self.max_steer >= torch.abs(traj[..., 5]))).all(1)&(
+            diff.abs()<5e-3).all(-1)
+        
         return feas_flag
 
     def gen_trajectories(self, x0, tf, lanes=None, dyn_filter=True, N=None):
         if N is None:
             N=self.N_seg
-        if lanes is None:
-            xf = self.gen_terminals(x0, tf)
-        else:
+
+        xf_set = self.gen_terminals(x0, tf)
+        if lanes is not None:
             lane_interp = [GeoUtils.interp_lanes(lane) for lane in lanes]
-            xf = self.gen_terminals_lane(
+            xf_lane = self.gen_terminals_lane(
                 x0, tf, lane_interp)
-            xf_set = self.gen_terminals(x0_set, tf)
-            flag = self.get_similarity_flag(xf_set_lane,xf_set)
-            xf_set = torch.cat()
-            
-            
+            xf_set = torch.cat((xf_lane,xf_set),0)
+        x0[...,2] = torch.clip(x0[...,2],min=1e-3)
+        xf_set[...,2] = torch.clip(xf_set[...,2],min=1e-3)   
         
         # x, y, v, a, yaw,r, t
-        traj = self.calc_trajectories(x0, tf, xf,N)
+        traj = self.calc_trajectories(x0, tf, xf_set,N)
+        traj = traj.unique(dim=0)
         if dyn_filter:
-            feas_flag = self.feasible_flag(traj)
+            feas_flag = self.feasible_flag(traj,xf_set)
             return traj[feas_flag, 1:,:], xf[feas_flag]
         else:
             return traj[...,1:,:], xf
@@ -244,21 +251,22 @@ class SplinePlanner(object):
             lane_interp = [GeoUtils.interp_lanes(lane) for lane in lanes]
             xf_set_lane = self.gen_terminals_lane(x0_set, tf, lane_interp)
             xf_set = torch.cat((xf_set_lane,xf_set),-2)
-     
-                
+        x0_set[...,2] = torch.clip(x0_set[...,2],min=1e-3)
+        xf_set[...,2] = torch.clip(xf_set[...,2],min=1e-3)
         num_node = x0_set.shape[0]
         num = xf_set.shape[1]
         x0_tiled = x0_set.repeat_interleave(num,0)
         xf_tiled = xf_set.reshape(-1, xf_set.shape[-1])
         traj = self.calc_trajectories(x0_tiled, tf, xf_tiled,N)
         if dyn_filter:
-            feas_flag = self.feasible_flag(traj)
+            feas_flag = self.feasible_flag(traj,xf_tiled)
         else:
             feas_flag = torch.ones(
                 num * num_node, dtype=torch.bool).to(x0_set.device)
         feas_flag = feas_flag.reshape(num_node, num)
         traj = traj.reshape(num_node, num, *traj.shape[1:])
         chosen_idx = [torch.where(feas_flag[i])[0].tolist() for i in range(num_node)]
+
         if max_children is not None:
             chosen_idx = [idx if len(idx)<=max_children else random.sample(idx,max_children) for idx in chosen_idx]
         traj_batch = [traj[i, chosen_idx[i],1:] for i in range(num_node)]
