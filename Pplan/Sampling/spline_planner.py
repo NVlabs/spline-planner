@@ -78,7 +78,7 @@ def mean_control_effort_coefficients(x0, dx0, xf, dxf):
 
 class SplinePlanner(object):
     def __init__(self, device, dx_grid=None, dy_grid=None, acce_grid=None, dyaw_grid=None, max_steer=0.5, max_rvel=8,
-                 acce_bound=[-6, 4], vbound=[0.0, 30], spline_order=3,N_seg = 10):
+                 acce_bound=[-6, 4], vbound=[-2.0, 30], spline_order=3,N_seg = 10, seed=0):
         self.spline_order = spline_order
         self.device = device
         assert spline_order == 3
@@ -88,7 +88,7 @@ class SplinePlanner(object):
         else:
             self.dx_grid = dx_grid
         if dy_grid is None:
-            self.dy_grid = torch.tensor([-4., -2., 0, 2., 4.]).to(self.device)
+            self.dy_grid = torch.tensor([-3., -1.5, 0, 1.5, 3.]).to(self.device)
         else:
             self.dy_grid = dy_grid
         self.dy_grid_lane = torch.tensor([-2., 0, 2.,]).to(self.device)
@@ -99,7 +99,7 @@ class SplinePlanner(object):
             self.acce_grid = acce_grid
         if dyaw_grid is None:
             self.dyaw_grid = torch.tensor(
-                [-np.pi / 12, 0, np.pi / 12]).to(self.device)
+                [-np.pi / 6, 0, np.pi / 6]).to(self.device)
         else:
             self.dyaw_grid = dyaw_grid
         self.max_steer = max_steer
@@ -107,6 +107,7 @@ class SplinePlanner(object):
         self.acce_bound = acce_bound
         self.vbound = vbound
         self.N_seg = N_seg
+        torch.manual_seed(seed)
 
     def calc_trajectories(self, x0, tf, xf,N=None):
         if N is None:
@@ -189,15 +190,17 @@ class SplinePlanner(object):
         if x0.ndim == 1:
             xy = torch.cat(
                 (delta_x[:, 0:1] + delta_x[:, 2:3] / 2 * tf + x0[2:3] * tf, delta_x[:, 1:2]), -1)
-            rotated_xy = GeoUtils.batch_rotate_2D(xy, x0[3]) + x0[:2]
-            return torch.cat((rotated_xy, delta_x[:, 2:] + x0[2:]), -1)
+            rotated_delta_xy = GeoUtils.batch_rotate_2D(xy, x0[3]) + x0[:2]
+            refpsi = torch.arctan2(rotated_delta_xy[...,1],rotated_delta_xy[...,0])
+            rotated_xy = rotated_delta_xy+x0[:2]
+            return torch.cat((rotated_xy, delta_x[:, 2:3] + x0[2:3],delta_x[:,3:]+refpsi.unsqueeze(-1)), -1)
         elif x0.ndim == 2:
             delta_x = torch.tile(delta_x, [x0.shape[0], 1, 1])
-            xy = torch.cat(
-                (delta_x[:, :, 0:1] + delta_x[:, :, 2:3] / 2 * tf + x0[:, None, 2:3] * tf, delta_x[:, :, 1:2]), -1)
-            rotated_xy = GeoUtils.batch_rotate_2D(
-                xy, x0[:, 3:4]) + x0[:, None, :2]
-            return torch.cat((rotated_xy, delta_x[:, :, 2:] + x0[:, None, 2:]), -1)
+            xy = torch.cat((delta_x[:, :, 0:1] + delta_x[:, :, 2:3] / 2 * tf + x0[:, None, 2:3] * tf, delta_x[:, :, 1:2]), -1)
+            rotated_delta_xy = GeoUtils.batch_rotate_2D(xy, x0[:, 3:4]) 
+            refpsi = torch.arctan2(rotated_delta_xy[...,1],rotated_delta_xy[...,0])
+            rotated_xy = rotated_delta_xy + x0[:, None, :2]
+            return torch.cat((rotated_xy, delta_x[:, :, 2:3] + x0[:, None, 2:3],delta_x[:, :, 3:]+refpsi.unsqueeze(-1)), -1)
         else:
             raise ValueError("x0 must have dimension 1 or 2")
 
@@ -207,7 +210,7 @@ class SplinePlanner(object):
         feas_flag = ((traj[..., 2] >= self.vbound[0]) & (traj[..., 2] < self.vbound[1]) &
                      (traj[..., 3] >= self.acce_bound[0]) & (traj[..., 3] <= self.acce_bound[1]) &
                      (torch.abs(traj[..., 5] * traj[..., 2]) <= self.max_rvel) & (
-            torch.abs(traj[..., 2]) * self.max_steer >= torch.abs(traj[..., 5]))).all(1)&(
+            torch.clip(torch.abs(traj[..., 2]),min=0.5) * self.max_steer >= torch.abs(traj[..., 5]))).all(1)&(
             diff.abs()<5e-3).all(-1)
         
         return feas_flag
@@ -242,15 +245,35 @@ class SplinePlanner(object):
         flag=flag.all(-1).any(-1)
         return flag
 
+    def gen_terminals_hardcoded(self,x0_set,tf):
+        X0,Y0,v0,psi0 = x0_set[...,0:1],x0_set[...,1:2],x0_set[...,2:3],x0_set[...,3:]
+        xf_set = list()
+        # drive straight
+        xf_straight = torch.cat((X0+v0*tf*torch.cos(psi0),Y0+v0*tf*torch.sin(psi0),v0,psi0),-1).unsqueeze(1)
+        xf_set.append(xf_straight)
+        # hard brake
+        decel = torch.clip(-v0/tf,min=self.acce_bound[0])
+        xf_brake = torch.cat((X0+(v0+decel*0.5*tf)*tf*torch.cos(psi0),Y0+(v0+decel*0.5*tf)*tf*torch.sin(psi0),v0+decel*tf,psi0),-1).unsqueeze(1)
+        xf_set.append(xf_brake)
+        xf_set = torch.cat(xf_set,1)
+        return xf_set
+
+
     def gen_trajectory_batch(self, x0_set, tf, lanes=None, dyn_filter=True,N=None,max_children=None):
         if N is None:
             N=self.N_seg
-        
-        xf_set = self.gen_terminals(x0_set, tf)
+        device=x0_set.device
+        xf_set_sample = self.gen_terminals(x0_set, tf)
+        importance_score = torch.rand(xf_set_sample.shape[:2],device=device)
+        xf_set_hardcoded = self.gen_terminals_hardcoded(x0_set,tf)
+        xf_set = torch.cat((xf_set_sample,xf_set_hardcoded),1)
+        importance_score = torch.cat((importance_score,2*torch.ones(xf_set_hardcoded.shape[:2],device=device)),1)
+
         if lanes is not None:
             lane_interp = [GeoUtils.interp_lanes(lane) for lane in lanes]
             xf_set_lane = self.gen_terminals_lane(x0_set, tf, lane_interp)
-            xf_set = torch.cat((xf_set_lane,xf_set),-2)
+            xf_set = torch.cat((xf_set,xf_set_lane),-2)
+            importance_score = torch.cat((importance_score,torch.ones(xf_set_lane.shape[:2],device=x0_set.device)),1)
         x0_set[...,2] = torch.clip(x0_set[...,2],min=1e-3)
         xf_set[...,2] = torch.clip(xf_set[...,2],min=1e-3)
         num_node = x0_set.shape[0]
@@ -265,10 +288,11 @@ class SplinePlanner(object):
                 num * num_node, dtype=torch.bool).to(x0_set.device)
         feas_flag = feas_flag.reshape(num_node, num)
         traj = traj.reshape(num_node, num, *traj.shape[1:])
-        chosen_idx = [torch.where(feas_flag[i])[0].tolist() for i in range(num_node)]
-
+        importance_score = importance_score*feas_flag
+        chosen_idx = [torch.where(importance_score[i])[0].tolist() for i in range(num_node)]
         if max_children is not None:
-            chosen_idx = [idx if len(idx)<=max_children else random.sample(idx,max_children) for idx in chosen_idx]
+            
+            chosen_idx = [idx if len(idx)<=max_children else torch.topk(importance_score[i],max_children)[1] for i,idx in enumerate(chosen_idx)]
         traj_batch = [traj[i, chosen_idx[i],1:] for i in range(num_node)]
         return traj_batch
 
