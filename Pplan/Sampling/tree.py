@@ -1,7 +1,6 @@
 
 import itertools
 from collections import defaultdict
-
 class Tree(object):
 
     def __init__(self, content, parent, depth):

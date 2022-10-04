@@ -268,7 +268,6 @@ class SplinePlanner(object):
         xf_set_hardcoded = self.gen_terminals_hardcoded(x0_set,tf)
         xf_set = torch.cat((xf_set_sample,xf_set_hardcoded),1)
         importance_score = torch.cat((importance_score,2*torch.ones(xf_set_hardcoded.shape[:2],device=device)),1)
-
         if lanes is not None:
             lane_interp = [GeoUtils.interp_lanes(lane) for lane in lanes]
             xf_set_lane = self.gen_terminals_lane(x0_set, tf, lane_interp)

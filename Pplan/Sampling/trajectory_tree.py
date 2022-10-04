@@ -4,6 +4,7 @@ import pdb
 import matplotlib.pyplot as plt
 import numpy as np
 from Pplan.Sampling.tree import Tree
+from torch.nn.utils.rnn import pad_sequence
 
 STATE_INDEX = [0, 1, 2, 4]
 
@@ -97,6 +98,19 @@ class TrajTree(Tree):
             child.plot_tree(ax)
         return ax
 
+    @staticmethod
+    def get_children_index_torch(nodes):
+        indices = dict()
+        for depth,nodes_d in nodes.items():
+            if depth+1 in nodes:
+                childs_d = nodes[depth+1]
+                indices_d = list()
+                for node in nodes_d:
+                    indices_d.append(torch.tensor([childs_d.index(child) for child in node.children]))
+                indices[depth] = pad_sequence(indices_d,batch_first=True,padding_value=-1)
+        return indices
+        
+
 
 if __name__ == "__main__":
     from Pplan.Sampling.spline_planner import SplinePlanner
@@ -128,6 +142,7 @@ if __name__ == "__main__":
         x0.grow_tree(expand_func, 2)
         t = timer.toc()
         nodes, _ = TrajTree.get_nodes_by_level(x0,2)
+        children_indices = TrajTree.get_children_index_torch(nodes)
         import pdb
         pdb.set_trace()
         ax = x0.plot_tree()
