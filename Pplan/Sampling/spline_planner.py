@@ -155,7 +155,10 @@ class SplinePlanner(object):
         elif x0.ndim == 2:
             for lane in lanes:
                 f, p_start = lane
-                p_start = torch.from_numpy(p_start).to(x0.device)
+                if isinstance(p_start,np.ndarray):
+                    p_start = torch.from_numpy(p_start).to(x0.device)
+                elif isinstance(p_start,torch.Tensor):
+                    p_start = p_start.to(x0.device)
                 offset = x0[:, :2]-p_start[None, :2]
                 s_offset = offset[:, 0]*torch.cos(p_start[2])+offset[:, 1]*torch.sin(p_start[2])
                     
