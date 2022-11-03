@@ -1,4 +1,3 @@
-
 import itertools
 from collections import defaultdict
 class Tree(object):

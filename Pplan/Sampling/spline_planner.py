@@ -86,22 +86,22 @@ class SplinePlanner(object):
             # self.dx_grid = torch.tensor([-4., 0, 4.]).to(self.device)
             self.dx_grid = torch.tensor([0.]).to(self.device)
         else:
-            self.dx_grid = dx_grid
+            self.dx_grid = torch.tensor(dx_grid).to(self.device)
         if dy_grid is None:
             self.dy_grid = torch.tensor([-3., -1.5, 0, 1.5, 3.]).to(self.device)
         else:
-            self.dy_grid = dy_grid
+            self.dy_grid = torch.tensor(dy_grid).to(self.device)
         self.dy_grid_lane = torch.tensor([-2., 0, 2.,]).to(self.device)
         if acce_grid is None:
             # self.acce_grid = torch.tensor([-1., -0.5, 0., 0.5, 1.]).to(self.device)
             self.acce_grid = torch.tensor([-1., 0., 1.]).to(self.device)
         else:
-            self.acce_grid = acce_grid
+            self.acce_grid = torch.tensor(acce_grid).to(self.device)
         if dyaw_grid is None:
             self.dyaw_grid = torch.tensor(
                 [-np.pi / 6, 0, np.pi / 6]).to(self.device)
         else:
-            self.dyaw_grid = dyaw_grid
+            self.dyaw_grid = torch.tensor(dyaw_grid).to(self.device)
         self.max_steer = max_steer
         self.max_rvel = max_rvel
         self.acce_bound = acce_bound
