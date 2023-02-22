@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 import random
 
+from Pplan.Sampling.forward_sampler import ForwardSampler
+
 
 STATE_INDEX = [0, 1, 2, 4]
 
@@ -78,7 +80,7 @@ def mean_control_effort_coefficients(x0, dx0, xf, dxf):
 
 class SplinePlanner(object):
     def __init__(self, device, dx_grid=None, dy_grid=None, acce_grid=None, dyaw_grid=None, max_steer=0.5, max_rvel=8,
-                 acce_bound=[-6, 4], vbound=[-2.0, 30], spline_order=3,N_seg = 10, seed=0):
+                 acce_bound=[-6, 4], vbound=[-2.0, 30], spline_order=3,N_seg = 10, low_speed_threshold=2.0, seed=0):
         self.spline_order = spline_order
         self.device = device
         assert spline_order == 3
@@ -107,6 +109,8 @@ class SplinePlanner(object):
         self.acce_bound = acce_bound
         self.vbound = vbound
         self.N_seg = N_seg
+        self.low_speed_threshold = low_speed_threshold
+        self.forward_sampler = ForwardSampler(acce_grid=self.acce_grid,dhm_grid=torch.linspace(-0.7,0.7,9),dhf_grid=[-0.4,0,0.4],dt=0.1,device=self.device)
         torch.manual_seed(seed)
 
     def calc_trajectories(self, x0, tf, xf,N=None):
@@ -206,9 +210,10 @@ class SplinePlanner(object):
             return torch.cat((rotated_xy, delta_x[:, :, 2:3] + x0[:, None, 2:3],delta_x[:, :, 3:]+refpsi.unsqueeze(-1)), -1)
         else:
             raise ValueError("x0 must have dimension 1 or 2")
+        
 
     def feasible_flag(self, traj,xf):
-        diff = traj[...,-1,[0,1,2,4]]-xf
+        diff = traj[...,-1,STATE_INDEX]-xf
 
         feas_flag = ((traj[..., 2] >= self.vbound[0]) & (traj[..., 2] < self.vbound[1]) &
                      (traj[..., 3] >= self.acce_bound[0]) & (traj[..., 3] <= self.acce_bound[1]) &
@@ -218,27 +223,42 @@ class SplinePlanner(object):
         
         return feas_flag
 
-    def gen_trajectories(self, x0, tf, lanes=None, dyn_filter=True, N=None):
+    def gen_trajectories(self, x0, tf, lanes=None, dyn_filter=True, N=None,lane_only=False):
         if N is None:
             N=self.N_seg
-
-        xf_set = self.gen_terminals(x0, tf)
         if lanes is not None:
+            if isinstance(lanes,torch.Tensor):
+                lanes = lanes.cpu().numpy()
             lane_interp = [GeoUtils.interp_lanes(lane) for lane in lanes]
             xf_lane = self.gen_terminals_lane(
                 x0, tf, lane_interp)
-            xf_set = torch.cat((xf_lane,xf_set),0)
+        else:
+            xf_lane = None
+        if lane_only:
+            assert xf_lane is not None
+            xf_set = xf_lane
+        else:
+            xf_set = self.gen_terminals(x0, tf)
+            if xf_lane is not None:
+                xf_set = torch.cat((xf_lane,xf_set),0)
         x0[...,2] = torch.clip(x0[...,2],min=1e-3)
         xf_set[...,2] = torch.clip(xf_set[...,2],min=1e-3)   
         
         # x, y, v, a, yaw,r, t
         traj = self.calc_trajectories(x0, tf, xf_set,N)
-        traj = traj.unique(dim=0)
         if dyn_filter:
             feas_flag = self.feasible_flag(traj,xf_set)
-            return traj[feas_flag, 1:,:], xf[feas_flag]
-        else:
-            return traj[...,1:,:], xf
+            traj = traj[feas_flag]
+            xf = xf_set[feas_flag]
+        traj = traj[...,1:,:] # remove the first time step
+        if x0[2]<self.low_speed_threshold:
+            # call forward sampler when velocity is low
+            extra_traj = self.forward_sampler.sample_trajs(x0.unsqueeze(0),int(tf/self.forward_sampler.dt)).squeeze(0)
+            f = interp1d(np.arange(1,extra_traj.shape[-2]+1)*self.forward_sampler.dt,extra_traj.cpu().numpy(),axis=-2)
+            extra_traj = torch.from_numpy(f(np.arange(1,N)*tf/N)).to(self.device)
+            traj = torch.cat((traj,extra_traj),0)
+        return traj, traj[...,-1,STATE_INDEX]
+
 
     @staticmethod
     def get_similarity_flag(x0,x1,thres=[2.0,0.5,2.0,np.pi/12]):
@@ -290,6 +310,15 @@ class SplinePlanner(object):
                 num * num_node, dtype=torch.bool).to(x0_set.device)
         feas_flag = feas_flag.reshape(num_node, num)
         traj = traj.reshape(num_node, num, *traj.shape[1:])
+        if (x0_set[:,2]<self.low_speed_threshold).any():
+            extra_traj = self.forward_sampler.sample_trajs(x0_set,int(tf/self.forward_sampler.dt))
+            f = interp1d(np.arange(1,extra_traj.shape[-2]+1)*self.forward_sampler.dt,extra_traj.cpu().numpy(),axis=-2,bounds_error=False,fill_value="extrapolate")
+            extra_traj = torch.from_numpy(f(np.arange(0,N)*tf/N)).to(self.device)
+            traj = torch.cat((traj,extra_traj),1)
+            extra_importance_score = torch.rand(extra_traj.shape[:2],device=device)
+            importance_score = torch.cat((importance_score,extra_importance_score),1)
+            feas_flag = torch.cat((feas_flag,torch.ones(extra_traj.shape[:2],device=device)),1)
+            
         importance_score = importance_score*feas_flag
         chosen_idx = [torch.where(importance_score[i])[0].tolist() for i in range(num_node)]
         if max_children is not None:
@@ -310,7 +339,7 @@ class SplinePlanner(object):
 
             traj = self.calc_trajectories(x0i, tf, xf,N)
             if dyn_filter:
-                feas_flag = self.feasible_flag(traj)
+                feas_flag = self.feasible_flag(traj,xf)
                 traj = traj[feas_flag]
                 xf = xf[feas_flag]
 
@@ -322,20 +351,24 @@ class SplinePlanner(object):
 
 if __name__ == "__main__":
     planner = SplinePlanner("cuda")
-    x0 = torch.tensor([1., 2., 10., 0.]).cuda()
+    x0 = torch.tensor([1., 2., 1., 0.]).cuda()
     tf = 5
     traj, xf = planner.gen_trajectories(x0, tf)
     trajs = planner.gen_trajectory_batch(xf, tf)
-    pdb.set_trace()
-    # # x, y, v, a, yaw,r, t = traj
-    # msize = 12
-    # trajs, nodes = planner.gen_trajectory_tree(x0, tf, 2)
-    # plt.figure(figsize=(20, 10))
-    # plt.plot(x0[0], x0[1], marker="o", color="b", markersize=msize)
-    # for node, traj in zip(nodes, trajs):
-    #     x = traj[..., 0]
-    #     y = traj[..., 1]
-    #     plt.plot(x.T, y.T, color="k")
-    #     for p in node:
-    #         plt.plot(p[0], p[1], marker="o", color="b", markersize=msize)
-    # plt.show()
+
+    # x, y, v, a, yaw,r, t = traj
+    msize = 12
+    trajs, nodes = planner.gen_trajectory_tree(x0, tf, 2)
+    x0 = x0.cpu().numpy()
+    traj = traj.cpu().numpy()
+    plt.figure(figsize=(20, 10))
+    plt.plot(x0[0], x0[1], marker="o", color="b", markersize=msize)
+    for node, traj in zip(nodes, trajs):
+        node = node.cpu().numpy()
+        traj = traj.cpu().numpy()
+        x = traj[..., 0]
+        y = traj[..., 1]
+        plt.plot(x.T, y.T, color="k")
+        for p in node:
+            plt.plot(p[0], p[1], marker="o", color="b", markersize=msize)
+    plt.show()
