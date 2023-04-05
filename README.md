@@ -1,2 +1,2 @@
-# Policy planning package
+# Spline planning package
 

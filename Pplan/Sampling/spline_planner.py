@@ -106,6 +106,7 @@ class SplinePlanner(object):
             self.dyaw_grid = torch.tensor(dyaw_grid).to(self.device)
         self.max_steer = max_steer
         self.max_rvel = max_rvel
+        self.psi_bound = [-np.pi*0.75, np.pi*0.75]
         self.acce_bound = acce_bound
         self.vbound = vbound
         self.N_seg = N_seg
@@ -216,6 +217,7 @@ class SplinePlanner(object):
         diff = traj[...,-1,STATE_INDEX]-xf
 
         feas_flag = ((traj[..., 2] >= self.vbound[0]) & (traj[..., 2] < self.vbound[1]) &
+                     (traj[..., 4] >= self.psi_bound[0]) & (traj[..., 4] < self.psi_bound[1]) &
                      (traj[..., 3] >= self.acce_bound[0]) & (traj[..., 3] <= self.acce_bound[1]) &
                      (torch.abs(traj[..., 5] * traj[..., 2]) <= self.max_rvel) & (
             torch.clip(torch.abs(traj[..., 2]),min=0.5) * self.max_steer >= torch.abs(traj[..., 5]))).all(1)&(
